@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from database.db_manager import DatabaseManager
 from utils.latex_generator import LatexGenerator
 import os
+import traceback
 
 class GenerationThread(QThread):
     """Thread pour générer les PDFs sans bloquer l'interface"""
@@ -20,6 +21,7 @@ class GenerationThread(QThread):
         self.generate_bareme = generate_bareme
     
     def run(self):
+        conn = None
         try:
             import sqlite3
             
@@ -38,12 +40,18 @@ class GenerationThread(QThread):
             
             # Générer le barème si demandé
             if self.generate_bareme:
-                self.progress.emit(0, "Génération du barème...")
-                devoir = db.get_devoir(self.devoir_id)
-                bareme_path = os.path.join(self.output_dir, f"Bareme_{devoir['nom']}.pdf".replace(' ', '_'))
-                bareme_file = generator.generate_bareme_pdf(self.devoir_id, bareme_path)
-                generated_files.append(bareme_file)
-                self.progress.emit(10, "Barème généré")
+                try:
+                    self.progress.emit(0, "Génération du barème...")
+                    devoir = db.get_devoir(self.devoir_id)
+                    bareme_path = os.path.join(self.output_dir, f"Bareme_{devoir['nom']}.pdf".replace(' ', '_'))
+                    bareme_file = generator.generate_bareme_pdf(self.devoir_id, bareme_path)
+                    generated_files.append(bareme_file)
+                    self.progress.emit(10, "Barème généré")
+                except Exception as e:
+                    error_msg = f"Erreur lors de la génération du barème: {str(e)}"
+                    self.progress.emit(10, error_msg)
+                    print(error_msg)
+                    print(traceback.format_exc())
             
             # Générer les comptes-rendus
             self.progress.emit(15, "Génération des comptes-rendus...")
@@ -73,13 +81,25 @@ class GenerationThread(QThread):
                     generated_files.append(pdf_path)
                     
                 except Exception as e:
-                    self.progress.emit(progress_pct, f"Erreur: {eleve['nom']} {eleve['prenom']} - {str(e)}")
+                    error_msg = f"Erreur: {eleve['nom']} {eleve['prenom']} - {str(e)}"
+                    self.progress.emit(progress_pct, error_msg)
+                    print(error_msg)
+                    print(traceback.format_exc())
             
             self.progress.emit(100, "Génération terminée!")
             self.finished.emit(generated_files, self.output_dir)
             
         except Exception as e:
-            self.error.emit(str(e))
+            error_msg = f"{str(e)}\n\n{traceback.format_exc()}"
+            self.error.emit(error_msg)
+            print(error_msg)
+        finally:
+            # IMPORTANT: Fermer la connexion pour libérer le verrou
+            if conn:
+                try:
+                    conn.close()
+                except Exception as e:
+                    print(f"Erreur lors de la fermeture de la connexion: {e}")
 
 class GenerationCRDialog(QDialog):
     def __init__(self, parent=None, devoir_id=None):
@@ -88,6 +108,7 @@ class GenerationCRDialog(QDialog):
         self.db = DatabaseManager()
         self.generated_files = []
         self.output_dir = None
+        self.thread = None
         
         self.setWindowTitle("Génération des comptes-rendus")
         self.setMinimumSize(600, 500)
@@ -199,6 +220,10 @@ class GenerationCRDialog(QDialog):
         """Met à jour la barre de progression et le log"""
         self.progress_bar.setValue(percentage)
         self.log_text.append(f"[{percentage}%] {message}")
+        # Forcer l'affichage
+        self.log_text.verticalScrollBar().setValue(
+            self.log_text.verticalScrollBar().maximum()
+        )
     
     def generation_finished(self, files, output_dir):
         """Appelé quand la génération est terminée"""
@@ -240,3 +265,10 @@ class GenerationCRDialog(QDialog):
                 subprocess.run(["open", self.output_dir])
             else:  # Linux
                 subprocess.run(["xdg-open", self.output_dir])
+    
+    def closeEvent(self, event):
+        """S'assurer que le thread est arrêté avant de fermer"""
+        if self.thread and self.thread.isRunning():
+            self.thread.quit()
+            self.thread.wait()
+        event.accept()

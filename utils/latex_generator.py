@@ -50,12 +50,18 @@ class LatexGenerator:
         distribution = db.get_distribution_notes_devoir(devoir_id)
         moyenne_classe = sum(distribution) / len(distribution) if distribution else 0
         
+        # Récupérer l'appréciation globale depuis la table compte_rendus
+        compte_rendu = db.get_compte_rendu(devoir_id, eleve_id)
+        appreciation = ""
+        if compte_rendu and compte_rendu['appreciation']:
+            appreciation = compte_rendu['appreciation']
+        
         if not output_path:
             filename = f"CR_{devoir['nom']}_{eleve['nom']}_{eleve['prenom']}.pdf".replace(' ', '_')
             output_path = os.path.join(self.output_dir, filename)
         
         # Générer le contenu LaTeX
-        latex_content = self._generate_cr_latex(devoir, eleve, notes, note_finale, moyenne_classe)
+        latex_content = self._generate_cr_latex(devoir, eleve, notes, note_finale, moyenne_classe, appreciation)
         
         # Compiler en PDF
         pdf_path = self._compile_latex(latex_content, output_path)
@@ -158,22 +164,55 @@ class LatexGenerator:
 """
         return latex
     
-    def _generate_cr_latex(self, devoir, eleve, notes, note_finale, moyenne_classe):
+    def _escape_latex(self, text):
+        """Échappe les caractères spéciaux LaTeX"""
+        if text is None:
+            return ""
+        
+        text = str(text)
+        replacements = {
+            '\\': r'\textbackslash{}',
+            '&': r'\&',
+            '%': r'\%',
+            '$': r'\$',
+            '#': r'\#',
+            '_': r'\_',
+            '{': r'\{',
+            '}': r'\}',
+            '~': r'\textasciitilde{}',
+            '^': r'\textasciicircum{}',
+        }
+        
+        for old, new in replacements.items():
+            text = text.replace(old, new)
+        
+        return text
+    
+    def _row_to_dict(self, row):
+        """Convertit un sqlite3.Row en dictionnaire pour un accès sûr"""
+        if row is None:
+            return {}
+        return dict(row)
+    
+    def _generate_cr_latex(self, devoir, eleve, notes, note_finale, moyenne_classe, appreciation=""):
         """Génère le code LaTeX pour un compte-rendu individuel"""
+        
+        # Convertir les Row en dict pour un accès plus sûr
+        notes_list = [self._row_to_dict(n) for n in notes]
         
         # Trier les questions par numéro
         def sort_key(n):
             import re
-            match = re.search(r'(\d+)', str(n['numero']))
+            match = re.search(r'(\d+)', str(n.get('numero', '0')))
             if match:
-                return (int(match.group(1)), str(n['numero']))
-            return (0, str(n['numero']))
+                return (int(match.group(1)), str(n.get('numero', '0')))
+            return (0, str(n.get('numero', '0')))
         
-        notes_triees = sorted(notes, key=sort_key)
+        notes_triees = sorted(notes_list, key=sort_key)
         
         # Calculer les statistiques
-        total_points = sum(n['points_max'] * n['coefficient'] for n in notes_triees)
-        points_obtenus = sum((n['points_obtenus'] or 0) * n['coefficient'] for n in notes_triees)
+        total_points = sum(n.get('points_max', 0) * n.get('coefficient', 1) for n in notes_triees)
+        points_obtenus = sum((n.get('points_obtenus') or 0) * n.get('coefficient', 1) for n in notes_triees)
         
         # Déterminer la couleur selon la note
         if note_finale >= 15:
@@ -193,7 +232,6 @@ class LatexGenerator:
 \usepackage{colortbl}
 \usepackage{xcolor}
 \usepackage{tikz}
-\usepackage{tcolorbox}
 
 \geometry{margin=2cm}
 
@@ -243,48 +281,61 @@ class LatexGenerator:
 
 \section*{Détail par question}
 
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{|c|p{6cm}|c|c|p{4cm}|}
+\hline
+\rowcolor{gray!30}
+\textbf{N°} & \textbf{Question} & \textbf{Points} & \textbf{\%} & \textbf{Commentaire} \\
+\hline
 """
         
         for n in notes_triees:
-            points_max = n['points_max'] * n['coefficient']
-            points_obtenu = (n['points_obtenus'] or 0) * n['coefficient']
+            points_max = n.get('points_max', 0) * n.get('coefficient', 1)
+            points_obtenu = (n.get('points_obtenus') or 0) * n.get('coefficient', 1)
             pourcentage = (points_obtenu / points_max * 100) if points_max > 0 else 0
             
             # Couleur selon le pourcentage
             if pourcentage >= 75:
-                box_color = "green!20"
+                row_color = "green!20"
             elif pourcentage >= 50:
-                box_color = "orange!20"
+                row_color = "orange!20"
             elif points_obtenu > 0:
-                box_color = "red!20"
+                row_color = "red!20"
             else:
-                box_color = "gray!10"
+                row_color = "gray!10"
             
-            latex += r"""
-\begin{tcolorbox}[colback=""" + box_color + r""", colframe=black!50, boxrule=0.5pt, arc=2mm]
-\textbf{Question """ + str(n['numero']) + r"""} : """ + n['intitule'] + r"""
+            # Échapper l'intitulé et le commentaire
+            intitule_escaped = self._escape_latex(n.get('intitule', ''))
+            commentaire = n.get('commentaire') or ''
+            commentaire_escaped = self._escape_latex(commentaire) if commentaire.strip() else ""
+            
+            latex += r"\rowcolor{" + row_color + r"}"
+            latex += f"\n{n.get('numero', '')} & {intitule_escaped} & "
+            latex += f"{points_obtenu:.2f}/{points_max:.2f} & {pourcentage:.0f}\\% & "
+            latex += f"{commentaire_escaped} \\\\\n\\hline\n"
+        
+        latex += r"""\end{tabular}
+\end{table}
 
+"""
+        
+        # Ajouter l'appréciation globale si elle existe
+        if appreciation and appreciation.strip():
+            appreciation_escaped = self._escape_latex(appreciation)
+            latex += r"""
+\vspace{1cm}
+
+\section*{Appréciation générale}
+
+\begin{center}
+\fbox{\begin{minipage}{0.9\textwidth}
 \vspace{0.3cm}
-
-\begin{tabular}{ll}
-\textbf{Points :} & """ + f"{points_obtenu:.2f} / {points_max:.2f}" + r""" (""" + f"{pourcentage:.0f}" + r"""\%) \\
-\end{tabular}
-"""
-            
-            # Ajouter le commentaire s'il existe
-            commentaire = n.get('commentaire', '')
-            if commentaire and commentaire.strip():
-                # Échapper les caractères spéciaux LaTeX
-                commentaire_escaped = commentaire.replace('&', r'\&').replace('%', r'\%').replace('_', r'\_')
-                latex += r"""
-
-\vspace{0.2cm}
-
-\textit{Commentaire :} """ + commentaire_escaped + r"""
-"""
-            
-            latex += r"""
-\end{tcolorbox}
+""" + appreciation_escaped + r"""
+\vspace{0.3cm}
+\end{minipage}}
+\end{center}
 
 """
         

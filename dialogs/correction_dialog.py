@@ -80,7 +80,8 @@ class QuestionNoteWidget(QFrame):
         # Commentaire pour la question
         self.commentaire_input = QLineEdit()
         self.commentaire_input.setPlaceholderText("Commentaire pour cette question (optionnel)")
-        self.commentaire_input.setText(commentaire)
+        # IMPORTANT: Convertir None en chaîne vide
+        self.commentaire_input.setText(commentaire if commentaire else "")
         layout.addWidget(self.commentaire_input)
     
     def on_value_changed(self):
@@ -116,6 +117,7 @@ class QuestionNoteWidget(QFrame):
         return self.spinbox.value()
     
     def get_commentaire(self):
+        """Retourne le commentaire (toujours une chaîne, jamais None)"""
         return self.commentaire_input.text().strip()
 
 class EleveListItem(QListWidgetItem):
@@ -364,13 +366,20 @@ class CorrectionDialog(QDialog):
         # Créer les widgets de question
         for note in notes:
             points = float(note['points_obtenus']) if note['points_obtenus'] is not None else 0.0
-            commentaire = note['commentaire'] if note['commentaire'] else ""
+            # CORRECTION: Gérer correctement le commentaire (peut être None)
+            commentaire = note['commentaire'] if note['commentaire'] is not None else ""
             widget = QuestionNoteWidget(note, points, commentaire)
             widget.noteChanged.connect(self.update_note_finale)
             self.questions_layout.addWidget(widget)
             self.question_widgets.append(widget)
         
-        self.appreciation_text.clear()
+        # Charger l'appréciation globale depuis la table compte_rendus
+        compte_rendu = self.db.get_compte_rendu(self.devoir_id, self.current_eleve_id)
+        if compte_rendu and compte_rendu['appreciation']:
+            self.appreciation_text.setText(compte_rendu['appreciation'])
+        else:
+            self.appreciation_text.clear()
+        
         self.update_note_finale()
     
     def update_note_finale(self):
@@ -413,14 +422,40 @@ class CorrectionDialog(QDialog):
             for i, widget in enumerate(self.question_widgets):
                 question = self.questions[i]
                 points = widget.get_points()
-                commentaire = widget.get_commentaire()
+                commentaire = widget.get_commentaire()  # Récupère toujours une chaîne
+                
+                # Debug: afficher ce qu'on sauvegarde
+                print(f"Sauvegarde Q{question['numero']}: points={points}, commentaire='{commentaire}'")
                 
                 self.db.save_note_question(
                     self.current_eleve_id,
                     question['id'],
                     points,
-                    commentaire
+                    commentaire  # Passe une chaîne (vide si pas de commentaire)
                 )
+            
+            # Sauvegarder l'appréciation globale dans la table compte_rendus
+            appreciation = self.appreciation_text.toPlainText().strip()
+            if appreciation:  # Sauvegarder seulement s'il y a une appréciation
+                # Vérifier si un compte-rendu existe déjà
+                existing = self.db.get_compte_rendu(self.devoir_id, self.current_eleve_id)
+                
+                if existing:
+                    # Mettre à jour l'appréciation existante
+                    self.db.conn.execute("""
+                        UPDATE compte_rendus 
+                        SET appreciation = ?
+                        WHERE id_devoir = ? AND id_eleve = ?
+                    """, (appreciation, self.devoir_id, self.current_eleve_id))
+                else:
+                    # Créer un nouveau compte-rendu (sans PDF pour l'instant)
+                    self.db.conn.execute("""
+                        INSERT INTO compte_rendus (id_devoir, id_eleve, appreciation)
+                        VALUES (?, ?, ?)
+                    """, (self.devoir_id, self.current_eleve_id, appreciation))
+                
+                self.db.conn.commit()
+                print(f"Appréciation sauvegardée: '{appreciation}'")
             
             # Recalculer la moyenne du devoir
             self.db.update_moyenne_devoir(self.devoir_id)
@@ -434,6 +469,9 @@ class CorrectionDialog(QDialog):
             QMessageBox.information(self, "Succès", "Notes sauvegardées !")
             
         except Exception as e:
+            import traceback
+            print(f"Erreur lors de la sauvegarde: {e}")
+            print(traceback.format_exc())
             QMessageBox.critical(self, "Erreur", f"Erreur lors de la sauvegarde : {str(e)}")
     
     def save_and_next(self):
