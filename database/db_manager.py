@@ -25,6 +25,23 @@ class DatabaseManager:
             self.conn.close()
             self.conn = None
     
+    # ========== MÉTHODES DE RECALCUL ==========
+    
+    def recalculate_all_moyennes(self):
+        """Recalcule toutes les moyennes de tous les devoirs"""
+        devoirs = self.conn.execute("SELECT id FROM devoirs").fetchall()
+        for devoir in devoirs:
+            self.update_moyenne_devoir(devoir['id'])
+    
+    def clear_devoir_notes(self, devoir_id):
+        """Supprime toutes les notes d'un devoir et recalcule la moyenne"""
+        self.conn.execute("""
+            DELETE FROM note_question 
+            WHERE id_question IN (SELECT id FROM questions WHERE id_devoir = ?)
+        """, (devoir_id,))
+        self.conn.commit()
+        self.update_moyenne_devoir(devoir_id)
+    
     # ========== CLASSES ==========
     
     def get_all_classes(self):
@@ -129,6 +146,7 @@ class DatabaseManager:
         return True, "Élève supprimé"
     
     def get_moyenne_eleve(self, eleve_id):
+        """Calcule la moyenne d'un élève en temps réel depuis la base de données"""
         query = """
             SELECT AVG(note_finale) as moyenne
             FROM (
@@ -138,13 +156,14 @@ class DatabaseManager:
                 FROM devoirs d
                 JOIN questions q ON q.id_devoir = d.id
                 LEFT JOIN note_question nq ON nq.id_question = q.id AND nq.id_eleve = ?
+                WHERE d.id_classe = (SELECT id_classe FROM eleves WHERE id = ?)
                 GROUP BY d.id
                 HAVING COUNT(nq.points_obtenus) = (SELECT COUNT(*) FROM questions WHERE id_devoir = d.id)
             )
         """
-        cursor = self.conn.execute(query, (eleve_id,))
+        cursor = self.conn.execute(query, (eleve_id, eleve_id))
         result = cursor.fetchone()
-        moyenne = result['moyenne'] if result['moyenne'] else 0
+        moyenne = result['moyenne'] if result and result['moyenne'] else 0
         return round(moyenne, 2)
     
     def get_nb_devoirs_eleve(self, eleve_id):
@@ -154,13 +173,18 @@ class DatabaseManager:
             JOIN questions q ON q.id_devoir = d.id
             JOIN note_question nq ON nq.id_question = q.id
             WHERE nq.id_eleve = ?
+            AND (SELECT COUNT(*) FROM note_question nq2 
+                 JOIN questions q2 ON nq2.id_question = q2.id 
+                 WHERE q2.id_devoir = d.id AND nq2.id_eleve = ?) = 
+                (SELECT COUNT(*) FROM questions WHERE id_devoir = d.id)
         """
-        cursor = self.conn.execute(query, (eleve_id,))
+        cursor = self.conn.execute(query, (eleve_id, eleve_id))
         return cursor.fetchone()[0]
     
     # ========== DEVOIRS ==========
     
     def get_all_devoirs(self, classe_id=None, search_term=""):
+        """Récupère tous les devoirs avec leurs statistiques EN TEMPS RÉEL"""
         query = """
             SELECT d.*, c.nom as classe_nom,
                    (SELECT COUNT(*) FROM questions WHERE id_devoir = d.id) as nb_questions,
@@ -232,6 +256,7 @@ class DatabaseManager:
         return True, "Devoir supprimé"
     
     def update_moyenne_devoir(self, devoir_id):
+        """Recalcule la moyenne d'un devoir depuis la base de données"""
         query = """
             SELECT AVG(note_finale) as moyenne
             FROM (
@@ -295,9 +320,12 @@ class DatabaseManager:
     # ========== NOTES ==========
     
     def save_note_question(self, id_eleve, id_question, points_obtenus):
+        """Sauvegarde une note"""
         self.conn.execute("""
-            INSERT OR REPLACE INTO note_question (id_eleve, id_question, points_obtenus)
+            INSERT INTO note_question (id_eleve, id_question, points_obtenus)
             VALUES (?, ?, ?)
+            ON CONFLICT(id_eleve, id_question) 
+            DO UPDATE SET points_obtenus = excluded.points_obtenus
         """, (id_eleve, id_question, points_obtenus))
         self.conn.commit()
     
@@ -340,6 +368,7 @@ class DatabaseManager:
         return round(note_sur_20, 2)
     
     def get_eleves_classe_avec_notes(self, devoir_id):
+        """Récupère les élèves avec leur statut de correction EN TEMPS RÉEL"""
         query = """
             SELECT e.id, e.nom, e.prenom,
                    (SELECT COUNT(*) 
@@ -390,6 +419,7 @@ class DatabaseManager:
     # ========== STATISTIQUES ==========
     
     def get_moyenne_classe(self, classe_id):
+        """Calcule la moyenne d'une classe EN TEMPS RÉEL"""
         query = """
             SELECT AVG(note_finale) as moyenne
             FROM (
@@ -407,7 +437,7 @@ class DatabaseManager:
         """
         cursor = self.conn.execute(query, (classe_id,))
         result = cursor.fetchone()
-        moyenne = result['moyenne'] if result['moyenne'] else 0
+        moyenne = result['moyenne'] if result and result['moyenne'] else 0
         return round(moyenne, 2)
     
     def get_distribution_notes_devoir(self, devoir_id):
@@ -426,10 +456,12 @@ class DatabaseManager:
         return [row['note_finale'] for row in cursor.fetchall()]
     
     def get_stats_globales(self):
+        """Calcule les statistiques globales EN TEMPS RÉEL"""
         nb_eleves = self.conn.execute("SELECT COUNT(*) FROM eleves").fetchone()[0]
         nb_classes = self.conn.execute("SELECT COUNT(*) FROM classes").fetchone()[0]
         nb_devoirs = self.conn.execute("SELECT COUNT(*) FROM devoirs").fetchone()[0]
         
+        # Nombre de devoirs à corriger (élèves qui n'ont pas toutes leurs notes)
         query = """
             SELECT COUNT(DISTINCT d.id)
             FROM devoirs d
@@ -445,6 +477,7 @@ class DatabaseManager:
         """
         nb_a_corriger = self.conn.execute(query).fetchone()[0]
         
+        # Moyenne globale (recalculée en temps réel)
         query = """
             SELECT AVG(note_finale) as moyenne
             FROM (
@@ -461,7 +494,7 @@ class DatabaseManager:
         """
         cursor = self.conn.execute(query)
         result = cursor.fetchone()
-        moyenne_globale = round(result['moyenne'], 2) if result['moyenne'] else 0
+        moyenne_globale = round(result['moyenne'], 2) if result and result['moyenne'] else 0
         
         return {
             'nb_eleves': nb_eleves,
