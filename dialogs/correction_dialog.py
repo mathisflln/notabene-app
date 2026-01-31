@@ -364,7 +364,8 @@ class CorrectionDialog(QDialog):
         # Créer les widgets de question
         for note in notes:
             points = float(note['points_obtenus']) if note['points_obtenus'] is not None else 0.0
-            widget = QuestionNoteWidget(note, points, "")
+            commentaire = note['commentaire'] if note['commentaire'] else ""
+            widget = QuestionNoteWidget(note, points, commentaire)
             widget.noteChanged.connect(self.update_note_finale)
             self.questions_layout.addWidget(widget)
             self.question_widgets.append(widget)
@@ -408,15 +409,17 @@ class CorrectionDialog(QDialog):
             return
         
         try:
-            # Sauvegarder chaque note
+            # Sauvegarder chaque note avec son commentaire
             for i, widget in enumerate(self.question_widgets):
                 question = self.questions[i]
                 points = widget.get_points()
+                commentaire = widget.get_commentaire()
                 
                 self.db.save_note_question(
                     self.current_eleve_id,
                     question['id'],
-                    points
+                    points,
+                    commentaire
                 )
             
             # Recalculer la moyenne du devoir

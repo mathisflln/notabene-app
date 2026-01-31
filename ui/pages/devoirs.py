@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt
 from database.db_manager import DatabaseManager
 from dialogs.devoir_dialog import DevoirDialog
 from dialogs.correction_dialog import CorrectionDialog
+from dialogs.generation_cr_dialog import GenerationCRDialog
 
 class DevoirsPage(QWidget):
     def __init__(self):
@@ -165,6 +166,13 @@ class DevoirsPage(QWidget):
         correct_btn.clicked.connect(lambda: self.open_correction(devoir_id))
         layout.addWidget(correct_btn)
         
+        # Bouton Générer CR
+        cr_btn = QPushButton("📄")
+        cr_btn.setFixedSize(30, 30)
+        cr_btn.setToolTip("Générer les comptes-rendus PDF")
+        cr_btn.clicked.connect(lambda: self.generate_comptes_rendus(devoir_id))
+        layout.addWidget(cr_btn)
+        
         edit_btn = QPushButton("✏️")
         edit_btn.setFixedSize(30, 30)
         edit_btn.setToolTip("Modifier le devoir")
@@ -190,6 +198,11 @@ class DevoirsPage(QWidget):
         dialog.exec()
         # Recharger les données après la correction
         self.load_data()
+    
+    def generate_comptes_rendus(self, devoir_id):
+        """Ouvre le dialog de génération des comptes-rendus"""
+        dialog = GenerationCRDialog(self, devoir_id)
+        dialog.exec()
     
     def edit_devoir(self):
         current_row = self.table.currentRow()

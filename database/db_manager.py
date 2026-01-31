@@ -319,20 +319,21 @@ class DatabaseManager:
     
     # ========== NOTES ==========
     
-    def save_note_question(self, id_eleve, id_question, points_obtenus):
-        """Sauvegarde une note"""
+    def save_note_question(self, id_eleve, id_question, points_obtenus, commentaire=""):
+        """Sauvegarde une note avec son commentaire"""
         self.conn.execute("""
-            INSERT INTO note_question (id_eleve, id_question, points_obtenus)
-            VALUES (?, ?, ?)
+            INSERT INTO note_question (id_eleve, id_question, points_obtenus, commentaire)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(id_eleve, id_question) 
-            DO UPDATE SET points_obtenus = excluded.points_obtenus
-        """, (id_eleve, id_question, points_obtenus))
+            DO UPDATE SET points_obtenus = excluded.points_obtenus,
+                         commentaire = excluded.commentaire
+        """, (id_eleve, id_question, points_obtenus, commentaire))
         self.conn.commit()
     
     def get_notes_eleve_devoir(self, id_eleve, id_devoir):
         query = """
             SELECT q.id, q.numero, q.intitule, q.points_max, 
-                   q.coefficient, nq.points_obtenus
+                   q.coefficient, nq.points_obtenus, nq.commentaire
             FROM questions q
             LEFT JOIN note_question nq 
                 ON q.id = nq.id_question AND nq.id_eleve = ?
